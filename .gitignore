@@ -16,3 +16,6 @@
 
 # vscode settings
 .vscode
+
+# database
+*.db
