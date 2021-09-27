@@ -1,8 +1,9 @@
 package inmem
 
 import (
-	"errors"
 	"sync"
+
+	"gitlab.com/alarmfox/distributed-kv/internal/shard/storage"
 )
 
 type Storage struct {
@@ -10,23 +11,19 @@ type Storage struct {
 	values map[string][]byte
 }
 
-func NewStorage(dbLocation string) *Storage {
+func NewStorage() *Storage {
 	return &Storage{
 		mx:     sync.RWMutex{},
 		values: make(map[string][]byte),
 	}
 }
 
-var (
-	ErrNotFound = errors.New("not found")
-)
-
 func (s *Storage) Get(key string) ([]byte, error) {
 	s.mx.RLock()
 	defer s.mx.RUnlock()
 	res, ok := s.values[key]
 	if !ok {
-		return []byte{}, ErrNotFound
+		return []byte{}, storage.ErrNotFound
 
 	}
 	return res, nil

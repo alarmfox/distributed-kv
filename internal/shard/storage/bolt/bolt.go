@@ -1,11 +1,11 @@
 package bolt
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"time"
 
+	"gitlab.com/alarmfox/distributed-kv/internal/shard/storage"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -36,16 +36,12 @@ func createDefaultBucket(db *bolt.DB) error {
 	})
 }
 
-var (
-	ErrNotFound = errors.New("not found")
-)
-
 func (s *Storage) Get(key string) ([]byte, error) {
 	var res []byte
 	err := s.db.View(func(t *bolt.Tx) error {
 		res = t.Bucket(defaultBucket).Get([]byte(key))
 		if res == nil {
-			return ErrNotFound
+			return storage.ErrNotFound
 		}
 		return nil
 	})

@@ -1,12 +1,11 @@
-package http
+package transport
 
 import (
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 
-	"gitlab.com/alarmfox/distributed-kv/internal/bolt"
+	"gitlab.com/alarmfox/distributed-kv/internal/shard/storage"
 )
 
 type Storage interface {
@@ -21,13 +20,12 @@ func MakeHTTPHandler(storage Storage) *http.ServeMux {
 	return r
 }
 
-func get(storage Storage) http.HandlerFunc {
+func get(st Storage) http.HandlerFunc {
 	return func(rw http.ResponseWriter, r *http.Request) {
 		if err := r.ParseForm(); err != nil {
 			http.Error(rw, fmt.Sprintf("invalid query params: %v", err), http.StatusBadRequest)
 			return
 		}
-		io.Copy(io.Discard, r.Body)
 		key := r.Form.Get("key")
 
 		if key == "" {
@@ -35,9 +33,9 @@ func get(storage Storage) http.HandlerFunc {
 			return
 		}
 
-		res, err := storage.Get(key)
+		res, err := st.Get(key)
 
-		if errors.Is(err, bolt.ErrNotFound) {
+		if errors.Is(err, storage.ErrNotFound) {
 			http.Error(rw, fmt.Sprintf("key %q not found", key), http.StatusNotFound)
 			return
 		}
@@ -59,7 +57,6 @@ func set(storage Storage) http.HandlerFunc {
 		}
 		key := r.Form.Get("key")
 		val := r.Form.Get("value")
-		io.Copy(io.Discard, r.Body)
 
 		if key == "" || val == "" {
 			http.Error(rw, "invalid query params", http.StatusBadRequest)
