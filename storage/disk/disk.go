@@ -1,11 +1,10 @@
-package bolt
+package disk
 
 import (
 	"fmt"
-	"os"
 	"time"
 
-	"gitlab.com/alarmfox/distributed-kv/internal/shard/storage"
+	"github.com/alarmfox/distributed-kv/storage"
 	bolt "go.etcd.io/bbolt"
 )
 
@@ -13,8 +12,8 @@ type Storage struct {
 	db *bolt.DB
 }
 
-func NewStorage(dbLocation string) (*Storage, func() error, error) {
-	db, err := bolt.Open(dbLocation, os.ModePerm, &bolt.Options{Timeout: time.Second * 1})
+func New(dbLocation string) (*Storage, func() error, error) {
+	db, err := bolt.Open(dbLocation, 0644, &bolt.Options{Timeout: time.Second * 1})
 	if err != nil {
 		return &Storage{}, func() error { return nil }, fmt.Errorf("could not open %q: %w", dbLocation, err)
 	}

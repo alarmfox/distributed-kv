@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"gitlab.com/alarmfox/distributed-kv/internal/shard/storage"
+	"github.com/alarmfox/distributed-kv/storage"
 )
 
 type Storage interface {
@@ -38,14 +38,12 @@ func get(st Storage) http.HandlerFunc {
 		if errors.Is(err, storage.ErrNotFound) {
 			http.Error(rw, fmt.Sprintf("key %q not found", key), http.StatusNotFound)
 			return
-		}
-
-		if err != nil {
+		} else if err != nil {
 			http.Error(rw, "unknown error", http.StatusInternalServerError)
 			return
 		}
 
-		fmt.Fprintf(rw, fmt.Sprintf("key: %s; val: %s", key, string(res)))
+		fmt.Fprintf(rw, "key: %s; val: %s", key, string(res))
 	}
 }
 
@@ -68,6 +66,6 @@ func set(storage Storage) http.HandlerFunc {
 			return
 		}
 
-		fmt.Fprintf(rw, fmt.Sprintf("key: %s; val: %s", key, val))
+		fmt.Fprintf(rw, "key: %s; val: %s", key, val)
 	}
 }
