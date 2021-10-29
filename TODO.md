@@ -3,7 +3,7 @@
 ## Next steps
 Next steps to implement for final solution.
 
-* [] Implement static sharding;
+* [x] Implement static sharding;
 * [] Implement resharding;
 
 ## Testing and benchmarking
