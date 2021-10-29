@@ -3,8 +3,8 @@
 ## Next steps
 Next steps to implement for final solution.
 
-* [] Implement shard communication with GRPC;
-* [] Implement 2^n resharding;
+* [] Implement static sharding;
+* [] Implement resharding;
 
 ## Testing and benchmarking
 * [] Create unit tests;

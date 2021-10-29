@@ -2,17 +2,17 @@
   "shards": [
     {
       "id": 1,
-      "name": "shard-1",
+      "name": "sh1",
       "address": "localhost:8080"
     },
     {
       "id": 2,
-      "name": "shard-2",
+      "name": "sh2",
       "address": "localhost:8081"
     },
     {
       "id": 3,
-      "name": "shard-3",
+      "name": "sh3",
       "address": "localhost:8082"
     }
   ]
