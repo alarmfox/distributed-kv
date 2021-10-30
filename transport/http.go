@@ -2,19 +2,21 @@ package transport
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 
-	"github.com/alarmfox/distributed-kv/controller"
+	"github.com/alarmfox/distributed-kv/domain"
 )
 
-func MakeHTTPHandler(c *controller.Controller) *http.ServeMux {
+func MakeHTTPHandler(c *domain.Controller) *http.ServeMux {
 	r := http.NewServeMux()
 	r.HandleFunc("/get", getHandler(c))
 	r.HandleFunc("/set", setHandler(c))
+	r.HandleFunc("/reshard", reshardHandler(c))
 	return r
 }
 
-func getHandler(c *controller.Controller) http.HandlerFunc {
+func getHandler(c *domain.Controller) http.HandlerFunc {
 	return func(rw http.ResponseWriter, r *http.Request) {
 		if err := r.ParseForm(); err != nil {
 			http.Error(rw, fmt.Sprintf("invalid query params: %v", err), http.StatusBadRequest)
@@ -38,7 +40,7 @@ func getHandler(c *controller.Controller) http.HandlerFunc {
 	}
 }
 
-func setHandler(c *controller.Controller) http.HandlerFunc {
+func setHandler(c *domain.Controller) http.HandlerFunc {
 	return func(rw http.ResponseWriter, r *http.Request) {
 		if err := r.ParseForm(); err != nil {
 			http.Error(rw, fmt.Sprintf("invalid query params: %v", err), http.StatusBadRequest)
@@ -58,5 +60,18 @@ func setHandler(c *controller.Controller) http.HandlerFunc {
 		}
 
 		rw.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func reshardHandler(c *domain.Controller) http.HandlerFunc {
+	return func(rw http.ResponseWriter, r *http.Request) {
+		if err := c.Reshard(); err != nil {
+			log.Printf("reshard error: %v", err)
+			rw.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		rw.WriteHeader(http.StatusNoContent)
+
 	}
 }

@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/alarmfox/distributed-kv/controller"
+	"github.com/alarmfox/distributed-kv/domain"
 	"github.com/alarmfox/distributed-kv/storage"
 	"github.com/alarmfox/distributed-kv/transport"
 )
@@ -34,7 +34,7 @@ func main() {
 	}
 	defer dispose()
 	log.Printf("Listening on %s", *listenAddress)
-	log.Fatal(http.ListenAndServe(*listenAddress, transport.MakeHTTPHandler(controller.New(shardMap, db, currShard))))
+	http.ListenAndServe(*listenAddress, transport.MakeHTTPHandler(domain.NewController(shardMap, db, currShard)))
 }
 
 type config struct {
@@ -66,7 +66,7 @@ func parseConfig(configPath, currShardName string) (map[uint64]string, uint64, e
 		}
 	}
 	if currShard < 0 {
-		return nil, 0, fmt.Errorf("current shard (%q) not found in config %q", currShardName, configPath)
+		return nil, 0, fmt.Errorf("shard (%q) not found in config %q", currShardName, configPath)
 	}
 	return shardMap, uint64(currShard), nil
 }

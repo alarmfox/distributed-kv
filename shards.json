@@ -9,11 +9,6 @@
       "id": 2,
       "name": "sh2",
       "address": "localhost:8081"
-    },
-    {
-      "id": 3,
-      "name": "sh3",
-      "address": "localhost:8082"
     }
   ]
 }
