@@ -10,6 +10,9 @@ Every shard will send and receive data from the appropriate shard when a request
 
 Shards must have sequential unique id starting from 0. For example, in a 4 nodes cluster, a shard will have 0, 1, 2 or 3 as an ID, and it must be specified when starting them.
 
+## Inter-shard communication
+Intershard communication is implemented with UDP multicast address.
+
 ## Resharding 
 Resharding means redistributing keys when the cluster size changes. In order to reshard, user must stop the cluster and update the configuration file with new shards.
 
