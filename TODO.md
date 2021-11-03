@@ -10,8 +10,9 @@ Next steps to implement for final solution.
 * [x] Implement static sharding;
 * [x] Implement resharding;
 * [x] Implement online shard communication;
-* [] Implement asynchronous event handling;
-* [] Implement replication;
+* [ ] Implement timeout and healthy mechanism when a shard goes down;
+* [ ] Implement asynchronous event handling;
+* [ ] Implement replication;
 
 ## Testing and benchmarking
 * [] Create unit tests;
