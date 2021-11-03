@@ -1,26 +1,22 @@
 package transport
 
 import (
-	"errors"
 	"fmt"
+	"log"
 	"net/http"
 
-	"github.com/alarmfox/distributed-kv/storage"
+	"github.com/alarmfox/distributed-kv/domain"
 )
 
-type Storage interface {
-	Get(key string) ([]byte, error)
-	Set(key string, value []byte) error
-}
-
-func MakeHTTPHandler(storage Storage) *http.ServeMux {
+func MakeHTTPHandler(c *domain.Controller) *http.ServeMux {
 	r := http.NewServeMux()
-	r.HandleFunc("/get", get(storage))
-	r.HandleFunc("/set", set(storage))
+	r.HandleFunc("/get", getHandler(c))
+	r.HandleFunc("/set", setHandler(c))
+	r.HandleFunc("/reshard", reshardHandler(c))
 	return r
 }
 
-func get(st Storage) http.HandlerFunc {
+func getHandler(c *domain.Controller) http.HandlerFunc {
 	return func(rw http.ResponseWriter, r *http.Request) {
 		if err := r.ParseForm(); err != nil {
 			http.Error(rw, fmt.Sprintf("invalid query params: %v", err), http.StatusBadRequest)
@@ -33,21 +29,18 @@ func get(st Storage) http.HandlerFunc {
 			return
 		}
 
-		res, err := st.Get(key)
+		res, err := c.Get(key)
 
-		if errors.Is(err, storage.ErrNotFound) {
-			http.Error(rw, fmt.Sprintf("key %q not found", key), http.StatusNotFound)
-			return
-		} else if err != nil {
+		if err != nil {
 			http.Error(rw, "unknown error", http.StatusInternalServerError)
 			return
 		}
 
-		fmt.Fprintf(rw, "key: %s; val: %s", key, string(res))
+		rw.Write(res)
 	}
 }
 
-func set(storage Storage) http.HandlerFunc {
+func setHandler(c *domain.Controller) http.HandlerFunc {
 	return func(rw http.ResponseWriter, r *http.Request) {
 		if err := r.ParseForm(); err != nil {
 			http.Error(rw, fmt.Sprintf("invalid query params: %v", err), http.StatusBadRequest)
@@ -61,11 +54,23 @@ func set(storage Storage) http.HandlerFunc {
 			return
 		}
 
-		if err := storage.Set(key, []byte(val)); err != nil {
+		if err := c.Set(key, []byte(val)); err != nil {
 			http.Error(rw, fmt.Sprintf("cannot store: %v", err), http.StatusBadRequest)
 			return
 		}
 
-		fmt.Fprintf(rw, "key: %s; val: %s", key, val)
+		rw.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func reshardHandler(c *domain.Controller) http.HandlerFunc {
+	return func(rw http.ResponseWriter, r *http.Request) {
+		if err := c.Reshard(); err != nil {
+			log.Printf("Reshard error: %v", err)
+			rw.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		rw.WriteHeader(http.StatusNoContent)
 	}
 }
