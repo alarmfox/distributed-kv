@@ -1,8 +1,6 @@
 #! /bin/bash
 
-addr="localhost:8080"
-for i in {1..1000}; do
-  key=$RANDOM
-  curl "http://${addr}/set?key=key-${key}&value=value-${RANDOM}"
-  echo "key-$key"
+addr="http://127.0.0.1:8080/set"
+for i in {1..100}; do
+  curl "${addr}?key=key-${RANDOM}&value=value-${RANDOM}"
 done

@@ -8,25 +8,26 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	"sync"
 	"time"
 
 	"github.com/alarmfox/distributed-kv/storage"
 )
 
 type Controller struct {
-	nShard      uint64
 	shards      map[uint64]string
 	currStorage *storage.Storage
 	currShardID uint64
 	client      *http.Client
-	sync.RWMutex
 }
 
-func NewController(shards map[uint64]string, currStorage *storage.Storage, currShardID uint64) *Controller {
+type PeerMessage struct {
+	ShardID uint64
+	Address string
+}
+
+func NewController(currStorage *storage.Storage, currShardID uint64) *Controller {
 	return &Controller{
-		nShard:      uint64(len(shards)),
-		shards:      shards,
+		shards:      make(map[uint64]string),
 		currStorage: currStorage,
 		currShardID: currShardID,
 		client: &http.Client{
@@ -36,7 +37,7 @@ func NewController(shards map[uint64]string, currStorage *storage.Storage, currS
 }
 
 func (c *Controller) getShardID(key string) uint64 {
-	return (binary.BigEndian.Uint64(fnv.New128().Sum([]byte(key))) % c.nShard) + 1
+	return (binary.BigEndian.Uint64(fnv.New128().Sum([]byte(key))) % uint64(len(c.shards))) + 1
 }
 
 func (c *Controller) Get(key string) ([]byte, error) {
@@ -105,4 +106,15 @@ func (c *Controller) getRemoteKey(address, key string) ([]byte, error) {
 
 	defer resp.Body.Close()
 	return io.ReadAll(resp.Body)
+}
+
+func (c *Controller) UpdateShardMap(pm PeerMessage) {
+	_, ok := c.shards[pm.ShardID]
+
+	if !ok {
+		c.shards[pm.ShardID] = pm.Address
+		if err := c.Reshard(); err != nil {
+			log.Printf("reshard: %v", err)
+		}
+	}
 }

@@ -8,6 +8,8 @@ A cluster is made up by multiple instances of shard program. Every shard knows a
 
 Every shard will send and receive data from the appropriate shard when a requests comes in.
 
+Shards must have sequential unique id starting from 1. For example, in a 4 nodes cluster, a shard will have 1, 2, 3 or 4 as an ID, and it must be specified when starting them.
+
 ## Resharding 
 Resharding means redistributing keys when the cluster size changes. In order to reshard, user must stop the cluster and update the configuration file with new shards.
 

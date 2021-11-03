@@ -72,6 +72,5 @@ func reshardHandler(c *domain.Controller) http.HandlerFunc {
 		}
 
 		rw.WriteHeader(http.StatusNoContent)
-
 	}
 }
