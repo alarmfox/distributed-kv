@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"sync"
 	"time"
 
 	"github.com/alarmfox/distributed-kv/storage"
@@ -22,7 +21,6 @@ type Controller struct {
 	currShardID uint64
 	currStorage *storage.Storage
 	client      *http.Client
-	sync.RWMutex
 }
 
 const (
@@ -73,7 +71,6 @@ func (c *Controller) Reshard() error {
 		shardID := c.getShardID(item.Key)
 		if err := c.setRemoteKey(c.shards[shardID], item.Key, item.Value); err != nil {
 			return fmt.Errorf("cannot set key %s: %v", item.Key, err)
-
 		}
 	}
 	return c.currStorage.DeleteKeys(itemsToReshard)
@@ -144,8 +141,6 @@ func (c *Controller) JoinCluster(ctx context.Context, peerAddress string) error 
 }
 
 func (c *Controller) processPing(shardID uint64, shardAddress string) {
-	c.RWMutex.Lock()
-	defer c.RWMutex.Unlock()
 	address, ok := c.shards[shardID]
 
 	if !ok {
@@ -160,8 +155,6 @@ func (c *Controller) processPing(shardID uint64, shardAddress string) {
 }
 
 func (c *Controller) processBye(shardID uint64) {
-	c.RWMutex.Lock()
-	defer c.RWMutex.Unlock()
 	address, ok := c.shards[shardID]
 	if ok && shardID != c.currShardID {
 		delete(c.shards, shardID)
@@ -170,7 +163,6 @@ func (c *Controller) processBye(shardID uint64) {
 			log.Printf("Reshard error: %v", err)
 		}
 	}
-
 }
 
 func listenForPeers(ctx context.Context, address string, onMessageFn func(peerMessage)) error {
