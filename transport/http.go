@@ -31,7 +31,13 @@ func getHandler(c *domain.Controller) http.HandlerFunc {
 
 		res, err := c.Get(key)
 
-		if err != nil {
+		if res == nil {
+			http.NotFound(rw, r)
+			return
+		} else if err == domain.ErrClusterUnhealthy {
+			http.Error(rw, domain.ErrClusterUnhealthy.Error(), http.StatusServiceUnavailable)
+			return
+		} else if err != nil {
 			http.Error(rw, "unknown error", http.StatusInternalServerError)
 			return
 		}

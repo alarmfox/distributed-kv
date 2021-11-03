@@ -29,7 +29,7 @@ func main() {
 
 	db, dispose, err := storage.New(*dbLocation)
 	if err != nil {
-		log.Fatalf("Error: %v", err)
+		log.Fatalf("Storage error: %v", err)
 	}
 	defer dispose()
 
@@ -40,10 +40,10 @@ func main() {
 
 	go controller.JoinCluster(ctx, *peerAddress)
 
+	sig := make(chan os.Signal, 1)
+	defer close(sig)
 	go func() {
-		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGTERM)
-		defer close(sig)
 		<-sig
 		cancel()
 
@@ -51,6 +51,7 @@ func main() {
 	if err := listenAndServe(ctx, *listenAddress, transport.MakeHTTPHandler(controller)); err != nil {
 		log.Printf("listen(%q) error: %v", *listenAddress, err)
 	}
+
 }
 
 func listenAndServe(ctx context.Context, address string, handler http.Handler) error {
