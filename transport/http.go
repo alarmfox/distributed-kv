@@ -66,7 +66,7 @@ func setHandler(c *domain.Controller) http.HandlerFunc {
 func reshardHandler(c *domain.Controller) http.HandlerFunc {
 	return func(rw http.ResponseWriter, r *http.Request) {
 		if err := c.Reshard(); err != nil {
-			log.Printf("reshard error: %v", err)
+			log.Printf("Reshard error: %v", err)
 			rw.WriteHeader(http.StatusInternalServerError)
 			return
 		}
