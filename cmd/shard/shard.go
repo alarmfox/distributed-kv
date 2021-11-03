@@ -6,8 +6,12 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+	"time"
 
-	"github.com/alarmfox/distributed-kv/cluster"
 	"github.com/alarmfox/distributed-kv/domain"
 	"github.com/alarmfox/distributed-kv/storage"
 	"github.com/alarmfox/distributed-kv/transport"
@@ -19,21 +23,8 @@ func main() {
 		listenAddress = flag.String("listen-addr", "127.0.0.1:9999", "Listen address for the shard.")
 		peerAddress   = flag.String("peer-addr", "239.0.0.0:9999", "Listen address for inter cluster communication. Must be a multicast address")
 		shardID       = flag.Uint64("id", 0, "ID of the shard.")
-		// name          = flag.String("name", "", "Shard name.")
-		// configFile    = flag.String("config-file", "config.json", "Configuration file for shards.")
 	)
 	flag.Parse()
-
-	// // fContent, err := os.ReadFile(*configFile)
-
-	// // if err != nil {
-	// // 	log.Fatalf("readfile(%q): %v", *configFile, err)
-	// // }
-
-	// shards, currShard, err := parseConfig(fContent, *name)
-	// if err != nil {
-	// 	log.Fatalf("[%s] config error: %v", *name, err)
-	// }
 	log.SetPrefix(fmt.Sprintf("[Shard-%d] ", *shardID))
 
 	db, dispose, err := storage.New(*dbLocation)
@@ -41,48 +32,54 @@ func main() {
 		log.Fatalf("Error: %v", err)
 	}
 	defer dispose()
-	log.Printf("Listening on %s", *listenAddress)
+
+	controller := domain.NewController(db, *shardID, *listenAddress)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	controller := domain.NewController(db, *shardID)
-	client := cluster.Client{
-		Self: domain.PeerMessage{
-			ShardID: *shardID,
-			Address: *listenAddress,
-		},
-		OnPeerMessage: controller.UpdateShardMap,
+	go controller.JoinCluster(ctx, *peerAddress)
+
+	go func() {
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGTERM)
+		defer close(sig)
+		<-sig
+		cancel()
+
+	}()
+	if err := listenAndServe(ctx, *listenAddress, transport.MakeHTTPHandler(controller)); err != nil {
+		log.Printf("listen(%q) error: %v", *listenAddress, err)
 	}
-	go client.Join(ctx, *peerAddress)
-
-	http.ListenAndServe(*listenAddress, transport.MakeHTTPHandler(controller))
-
 }
 
-// type config struct {
-// 	Shards []struct {
-// 		ID      uint   `json:"id"`
-// 		Name    string `json:"name"`
-// 		Address string `json:"address"`
-// 	} `json:"shards"`
-// }
+func listenAndServe(ctx context.Context, address string, handler http.Handler) error {
+	srv := http.Server{
+		Addr:              address,
+		Handler:           handler,
+		ReadTimeout:       2 * time.Second,
+		WriteTimeout:      time.Second,
+		IdleTimeout:       time.Second,
+		ReadHeaderTimeout: time.Second,
+	}
 
-// func parseConfig(body []byte, currShardName string) (map[uint64]string, uint64, error) {
-// 	var c config
-// 	if err := json.Unmarshal(body, &c); err != nil {
-// 		return nil, 0, err
-// 	}
+	wg := sync.WaitGroup{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-ctx.Done()
+		timeoutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(timeoutCtx); err != nil {
+			log.Printf("Server closed with errors: %v", err)
+		}
+	}()
 
-// 	shardMap := make(map[uint64]string)
-// 	currShard := -1
-// 	for _, shard := range c.Shards {
-// 		shardMap[uint64(shard.ID)] = shard.Address
-// 		if shard.Name == currShardName {
-// 			currShard = int(shard.ID)
-// 		}
-// 	}
-// 	if currShard < 0 {
-// 		return nil, 0, fmt.Errorf("shard (%q) not found in config", currShardName)
-// 	}
-// 	return shardMap, uint64(currShard), nil
-// }
+	log.Printf("Listening on %s", address)
+	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+		return err
+	}
+
+	wg.Wait()
+	return nil
+}
