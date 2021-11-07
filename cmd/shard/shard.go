@@ -33,11 +33,10 @@ func main() {
 	}
 	defer dispose()
 
-	controller := domain.NewController(db, *shardID, *listenAddress)
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	controller := domain.NewController(db, *shardID, *listenAddress)
 	go controller.JoinCluster(ctx, *peerAddress)
 
 	sig := make(chan os.Signal, 1)

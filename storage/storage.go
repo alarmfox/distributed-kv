@@ -76,7 +76,7 @@ func (s *Storage) DeleteKeys(items []Item) error {
 		bucket := t.Bucket(defaultBucket)
 		for _, item := range items {
 			if err := bucket.Delete([]byte(item.Key)); err != nil {
-				return fmt.Errorf("could not delete key: %v", err)
+				return fmt.Errorf("could not delete key %q: %v", item.Key, err)
 			}
 		}
 		return nil
