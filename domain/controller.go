@@ -132,8 +132,8 @@ func (c *Controller) getRemoteKey(address, key string) ([]byte, error) {
 
 const (
 	pingEvent = iota
-	byeEvent
 	conflictEvent
+	clusterHealthy
 )
 
 type peerMessage struct {
@@ -146,8 +146,6 @@ func (c *Controller) processPeerMessage(pm peerMessage) {
 	switch pm.ActionID {
 	case pingEvent:
 		c.processPing(pm.ShardID, pm.Address)
-	case byeEvent:
-		c.processBye(pm.ShardID)
 	case conflictEvent:
 		c.processConflict(pm.ShardID)
 	default:
@@ -177,37 +175,26 @@ func (c *Controller) processPing(shardID uint64, shardAddress string) {
 
 	if address != shardAddress {
 		c.shards[shardID] = shardAddress
-		log.Printf("Got new peer %s for %d", shardAddress, shardID)
+		log.Printf("Got new peer %d with address %s", shardID, shardAddress)
 		if err := c.Reshard(); err != nil {
 			log.Printf("Reshard error: %v", err)
 		}
 	}
 }
 
-func (c *Controller) processBye(shardID uint64) {
-	c.Mutex.Lock()
-	defer c.Mutex.Unlock()
-
-	address, ok := c.shards[shardID]
-
-	if ok && shardID != c.currShardID {
-		delete(c.shards, shardID)
-		log.Printf("Deleting peer %s", address)
-		if err := c.Reshard(); err != nil {
-			log.Printf("Reshard error: %v", err)
-		}
-	}
-}
+const conflictRetry = 5 * time.Second
 
 func (c *Controller) processConflict(shardID uint64) {
-	c.Mutex.Lock()
-	defer c.Mutex.Unlock()
 
 	if atomic.CompareAndSwapInt32(&c.clusterHealthy, 1, 0) {
 		log.Printf("Conflict for shard %d; cluster is unhealthy", shardID)
 	}
 
-	time.AfterFunc(5*time.Second, func() { atomic.StoreInt32(&c.clusterHealthy, 1) })
+	time.AfterFunc(conflictRetry, func() {
+		if atomic.CompareAndSwapInt32(&c.clusterHealthy, 0, 1) {
+			log.Printf("Cluster healthy")
+		}
+	})
 
 }
 
@@ -269,9 +256,7 @@ func (c *Controller) manageCluster(ctx context.Context, peerAddress string) {
 		return
 	}
 
-	byeMessage := peerMessage{ActionID: byeEvent, ShardID: c.currShardID, Address: c.shards[c.currShardID]}
 	defer func() {
-		broadcast(conn, byeMessage)
 		conn.Close()
 		close(c.broadcastQueue)
 	}()
