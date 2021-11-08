@@ -24,9 +24,9 @@ type Controller struct {
 	currShardID    uint64
 	currStorage    *storage.Storage
 	client         *http.Client
-	eventsQueue    chan peerMessage
 	broadcastQueue chan peerMessage
 	clusterHealthy int32
+	clusterLocked  int32
 	sync.Mutex
 }
 
@@ -38,9 +38,9 @@ func NewController(currStorage *storage.Storage, currShardID uint64, shardAddres
 		client: &http.Client{
 			Timeout: time.Second,
 		},
-		eventsQueue:    make(chan peerMessage),
-		broadcastQueue: make(chan peerMessage, 1),
+		broadcastQueue: make(chan peerMessage),
 		clusterHealthy: 1,
+		clusterLocked:  0,
 	}
 }
 
@@ -53,12 +53,12 @@ var (
 )
 
 func (c *Controller) Get(key string) ([]byte, error) {
-	if atomic.LoadInt32(&c.clusterHealthy) == 0 {
-		return nil, ErrClusterUnhealthy
+	if !c.isClusterReady() {
+		return []byte{}, ErrClusterUnhealthy
 	}
 	shardID := c.getShardID(key)
 	if shardID != c.currShardID {
-		log.Printf("Key: %s; curShard: %d; redirecting to Shard-%d", key, c.currShardID, shardID)
+		log.Printf("Key: %s; redirecting to Shard-%d", key, shardID)
 		return c.getRemoteKey(c.shards[shardID], key)
 	}
 
@@ -66,12 +66,12 @@ func (c *Controller) Get(key string) ([]byte, error) {
 }
 
 func (c *Controller) Set(key string, value []byte) error {
-	if atomic.LoadInt32(&c.clusterHealthy) == 0 {
+	if !c.isClusterReady() {
 		return ErrClusterUnhealthy
 	}
 	shardID := c.getShardID(key)
 	if shardID != c.currShardID {
-		log.Printf("Key: %s; curShard: %d; redirecting to Shard-%d", key, c.currShardID, shardID)
+		log.Printf("Key: %s; redirecting to Shard-%d", key, shardID)
 		return c.setRemoteKey(c.shards[shardID], key, value)
 	}
 
@@ -79,10 +79,10 @@ func (c *Controller) Set(key string, value []byte) error {
 }
 
 func (c *Controller) Reshard() error {
-	itemsToReshard := c.currStorage.GetExtraKeys(func(key string) bool { return c.currShardID != c.getShardID(key) })
+	c.lockCluster()
+	defer c.unlockCluster()
 
-	atomic.StoreInt32(&c.clusterHealthy, 0)
-	defer atomic.StoreInt32(&c.clusterHealthy, 1)
+	itemsToReshard := c.currStorage.GetExtraKeys(func(key string) bool { return c.currShardID != c.getShardID(key) })
 
 	for _, item := range itemsToReshard {
 		shardID := c.getShardID(item.Key)
@@ -133,68 +133,66 @@ func (c *Controller) getRemoteKey(address, key string) ([]byte, error) {
 const (
 	pingEvent = iota
 	conflictEvent
-	clusterHealthy
+	clusterLocked
+	clusterUnlocked
 )
 
 type peerMessage struct {
-	ActionID uint8
-	ShardID  uint64
-	Address  string
+	Event   uint8
+	ShardID uint64
+	Address string
 }
 
 func (c *Controller) processPeerMessage(pm peerMessage) {
-	switch pm.ActionID {
+	switch pm.Event {
 	case pingEvent:
 		c.processPing(pm.ShardID, pm.Address)
 	case conflictEvent:
 		c.processConflict(pm.ShardID)
+	case clusterLocked:
+		atomic.StoreInt32(&c.clusterLocked, 1)
+	case clusterUnlocked:
+		atomic.StoreInt32(&c.clusterLocked, 0)
 	default:
-		log.Printf("unknown action: %d", pm.ActionID)
+		log.Printf("Unknown action: %d", pm.Event)
 	}
 }
 
 func (c *Controller) JoinCluster(ctx context.Context, peerAddress string) error {
 	go c.manageCluster(ctx, peerAddress)
-	return listenForPeers(ctx, peerAddress, c.eventsQueue)
+	return c.listenForPeers(ctx, peerAddress)
 
 }
 
 func (c *Controller) processPing(shardID uint64, shardAddress string) {
 	c.Mutex.Lock()
 	defer c.Mutex.Unlock()
-	address := c.shards[shardID]
 
-	if c.currShardID == shardID && shardAddress != c.shards[c.currShardID] {
-		c.broadcastQueue <- peerMessage{ActionID: conflictEvent, ShardID: shardID, Address: address}
+	if !c.isClusterReady() {
 		return
 	}
 
-	if atomic.LoadInt32(&c.clusterHealthy) == 0 {
+	address := c.shards[shardID]
+
+	if c.currShardID == shardID && shardAddress != c.shards[c.currShardID] {
+		c.broadcastQueue <- peerMessage{Event: conflictEvent, ShardID: shardID, Address: address}
 		return
 	}
 
 	if address != shardAddress {
 		c.shards[shardID] = shardAddress
-		log.Printf("Got new peer %d with address %s", shardID, shardAddress)
+		log.Printf("Got new peer: id: %d; address %s", shardID, shardAddress)
 		if err := c.Reshard(); err != nil {
 			log.Printf("Reshard error: %v", err)
 		}
 	}
 }
 
-const conflictRetry = 5 * time.Second
-
 func (c *Controller) processConflict(shardID uint64) {
 
 	if atomic.CompareAndSwapInt32(&c.clusterHealthy, 1, 0) {
 		log.Printf("Conflict for shard %d; cluster is unhealthy", shardID)
 	}
-
-	time.AfterFunc(conflictRetry, func() {
-		if atomic.CompareAndSwapInt32(&c.clusterHealthy, 0, 1) {
-			log.Printf("Cluster healthy")
-		}
-	})
 
 }
 
@@ -203,7 +201,8 @@ const (
 	socketBufferSize = 1024 * 1024
 )
 
-func listenForPeers(ctx context.Context, address string, events chan<- peerMessage) error {
+func (c *Controller) listenForPeers(ctx context.Context, address string) error {
+	defer close(c.broadcastQueue)
 	laddr, err := net.ResolveUDPAddr("udp4", address)
 	if err != nil {
 		return fmt.Errorf("resolve(%q): %v", address, err)
@@ -214,15 +213,15 @@ func listenForPeers(ctx context.Context, address string, events chan<- peerMessa
 		return fmt.Errorf("listen(%q): %v", address, err)
 	}
 	defer conn.Close()
-	defer close(events)
 
 	conn.SetReadBuffer(socketBufferSize)
 
 	log.Printf("Listening for peers on: %s", address)
+LOOP:
 	for {
 		select {
 		case <-ctx.Done():
-			return nil
+			break LOOP
 		default:
 			buffer := make([]byte, bufferSize)
 			bytesRead, from, err := conn.ReadFromUDP(buffer)
@@ -234,13 +233,15 @@ func listenForPeers(ctx context.Context, address string, events chan<- peerMessa
 			if err := json.Unmarshal(buffer[:bytesRead], &msg); err != nil {
 				log.Printf("Decode error from %s: %v", from.IP, err)
 			}
-			events <- msg
+			c.processPeerMessage(msg)
 		}
 	}
+	return nil
 }
 
 const (
-	pingInterval = time.Second
+	pingInterval  = time.Second
+	conflictRetry = 5 * time.Second
 )
 
 func (c *Controller) manageCluster(ctx context.Context, peerAddress string) {
@@ -256,30 +257,54 @@ func (c *Controller) manageCluster(ctx context.Context, peerAddress string) {
 		return
 	}
 
+	defer conn.Close()
+
+	pingMessage := peerMessage{Event: pingEvent, ShardID: c.currShardID, Address: c.shards[c.currShardID]}
+	pingTicks := time.NewTicker(pingInterval)
+	recoverConflictTicks := time.NewTicker(conflictRetry)
+
 	defer func() {
-		conn.Close()
-		close(c.broadcastQueue)
+		pingTicks.Stop()
+		recoverConflictTicks.Stop()
 	}()
 
-	pingMessage := peerMessage{ActionID: pingEvent, ShardID: c.currShardID, Address: c.shards[c.currShardID]}
 LOOP:
 	for {
 		select {
-		case <-time.After(pingInterval):
+		case <-recoverConflictTicks.C:
+			if atomic.CompareAndSwapInt32(&c.clusterHealthy, 0, 1) {
+				log.Printf("trying to recover cluster")
+			}
+		case <-pingTicks.C:
 			broadcast(conn, pingMessage)
 		case m := <-c.broadcastQueue:
 			broadcast(conn, m)
-		case m := <-c.eventsQueue:
-			c.processPeerMessage(m)
 		case <-ctx.Done():
 			break LOOP
 		}
 	}
 }
 
+func (c *Controller) lockCluster() {
+	atomic.StoreInt32(&c.clusterLocked, 1)
+	c.broadcastQueue <- peerMessage{Event: clusterLocked}
+	log.Printf("cluster locked")
+
+}
+
+func (c *Controller) unlockCluster() {
+	atomic.StoreInt32(&c.clusterLocked, 0)
+	c.broadcastQueue <- peerMessage{Event: clusterUnlocked}
+	log.Printf("cluster unlocked")
+}
+
+func (c *Controller) isClusterReady() bool {
+	return atomic.LoadInt32(&c.clusterHealthy) == 1 && atomic.LoadInt32(&c.clusterLocked) == 0
+}
+
 func broadcast(w io.Writer, pm peerMessage) {
 	body, _ := json.Marshal(pm)
 	if _, err := w.Write(body); err != nil {
-		log.Printf("Publish error: %v", err)
+		log.Printf("Write(%+v): %v", pm, err)
 	}
 }
