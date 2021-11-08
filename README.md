@@ -14,8 +14,10 @@ Shards must have sequential unique id starting from 0. For example, in a 4 nodes
 Intershard communication is implemented with UDP multicast address.
 
 ## Resharding 
-Resharding means redistributing keys when the cluster size changes. In order to reshard, user must stop the cluster and update the configuration file with new shards.
+Resharding means redistributing keys when the cluster size changes. The cluster will auto-scale when a new shard joins the cluster. However this operation will use a distributed lock that will make cluster not available for a certain time.
 
-There can be two cases:
-1. **Increase** of cluster size: in this case admin must hit all old shards on reshard endpoint. 
-2. **Decrease** of cluster size: in this case one can save all the keys from a backup and use a script to fill the new cluster.
+When a shard goes down, one should manually reshard.
+
+## Replication
+Not available
+
