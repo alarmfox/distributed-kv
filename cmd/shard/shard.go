@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/alarmfox/distributed-kv/cluster"
 	"github.com/alarmfox/distributed-kv/domain"
 	"github.com/alarmfox/distributed-kv/storage"
 	"github.com/alarmfox/distributed-kv/transport"
@@ -37,7 +38,8 @@ func main() {
 	defer cancel()
 
 	controller := domain.NewController(db, *shardID, *listenAddress)
-	go controller.JoinCluster(ctx, *peerAddress)
+	clusterClient := cluster.Client{}
+	go clusterClient.JoinCluster(ctx, *shardID, *peerAddress, *listenAddress)
 
 	sig := make(chan os.Signal, 1)
 	defer close(sig)

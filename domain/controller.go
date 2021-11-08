@@ -1,32 +1,25 @@
 package domain
 
 import (
-	"context"
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/fnv"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"net/url"
 	"sync"
-	"sync/atomic"
-	"time"
 
+	"github.com/alarmfox/distributed-kv/cluster"
 	"github.com/alarmfox/distributed-kv/storage"
 )
 
 type Controller struct {
-	shards         map[uint64]string
-	currShardID    uint64
-	currStorage    *storage.Storage
-	client         *http.Client
-	broadcastQueue chan peerMessage
-	clusterHealthy int32
-	clusterLocked  int32
+	shards        map[uint64]string
+	currShardID   uint64
+	currStorage   *storage.Storage
+	clusterClient *cluster.Client
 	sync.Mutex
 }
 
@@ -35,12 +28,6 @@ func NewController(currStorage *storage.Storage, currShardID uint64, shardAddres
 		shards:      map[uint64]string{currShardID: shardAddress},
 		currStorage: currStorage,
 		currShardID: currShardID,
-		client: &http.Client{
-			Timeout: time.Second,
-		},
-		broadcastQueue: make(chan peerMessage),
-		clusterHealthy: 1,
-		clusterLocked:  0,
 	}
 }
 
@@ -53,7 +40,7 @@ var (
 )
 
 func (c *Controller) Get(key string) ([]byte, error) {
-	if !c.isClusterReady() {
+	if !c.clusterClient.IsClusterReady() {
 		return []byte{}, ErrClusterUnhealthy
 	}
 	shardID := c.getShardID(key)
@@ -66,7 +53,7 @@ func (c *Controller) Get(key string) ([]byte, error) {
 }
 
 func (c *Controller) Set(key string, value []byte) error {
-	if !c.isClusterReady() {
+	if !c.clusterClient.IsClusterReady() {
 		return ErrClusterUnhealthy
 	}
 	shardID := c.getShardID(key)
@@ -79,8 +66,8 @@ func (c *Controller) Set(key string, value []byte) error {
 }
 
 func (c *Controller) Reshard() error {
-	c.lockCluster()
-	defer c.unlockCluster()
+	c.clusterClient.LockCluster()
+	defer c.clusterClient.UnlockCluster()
 
 	itemsToReshard := c.currStorage.GetExtraKeys(func(key string) bool { return c.currShardID != c.getShardID(key) })
 
@@ -100,7 +87,7 @@ func (c *Controller) setRemoteKey(address, key string, value []byte) error {
 	params.Add("value", string(value))
 
 	reqUrl := fmt.Sprintf("http://%s/set?%s", address, params.Encode())
-	resp, err := c.client.Get(reqUrl)
+	resp, err := http.Get(reqUrl)
 
 	if err != nil {
 		return fmt.Errorf("Set(%q) error: %v", address, err)
@@ -118,7 +105,7 @@ func (c *Controller) getRemoteKey(address, key string) ([]byte, error) {
 	params.Add("key", key)
 
 	reqUrl := fmt.Sprintf("http://%s/get?%s", address, params.Encode())
-	resp, err := c.client.Get(reqUrl)
+	resp, err := http.Get(reqUrl)
 
 	if err != nil {
 		return nil, fmt.Errorf("Get(%q) error: %v", reqUrl, err)
@@ -130,52 +117,18 @@ func (c *Controller) getRemoteKey(address, key string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
-const (
-	pingEvent = iota
-	conflictEvent
-	clusterLocked
-	clusterUnlocked
-)
-
-type peerMessage struct {
-	Event   uint8
-	ShardID uint64
-	Address string
-}
-
-func (c *Controller) processPeerMessage(pm peerMessage) {
-	switch pm.Event {
-	case pingEvent:
-		c.processPing(pm.ShardID, pm.Address)
-	case conflictEvent:
-		c.processConflict(pm.ShardID)
-	case clusterLocked:
-		atomic.StoreInt32(&c.clusterLocked, 1)
-	case clusterUnlocked:
-		atomic.StoreInt32(&c.clusterLocked, 0)
-	default:
-		log.Printf("Unknown action: %d", pm.Event)
-	}
-}
-
-func (c *Controller) JoinCluster(ctx context.Context, peerAddress string) error {
-	go c.manageCluster(ctx, peerAddress)
-	return c.listenForPeers(ctx, peerAddress)
-
-}
-
 func (c *Controller) processPing(shardID uint64, shardAddress string) {
 	c.Mutex.Lock()
 	defer c.Mutex.Unlock()
 
-	if !c.isClusterReady() {
+	if !c.clusterClient.IsClusterReady() {
 		return
 	}
 
 	address := c.shards[shardID]
 
 	if c.currShardID == shardID && shardAddress != c.shards[c.currShardID] {
-		c.broadcastQueue <- peerMessage{Event: conflictEvent, ShardID: shardID, Address: address}
+		c.clusterClient.Broadcast(cluster.PeerEvent{Event: cluster.ConflictEvent, ShardID: shardID, Address: address})
 		return
 	}
 
@@ -185,126 +138,5 @@ func (c *Controller) processPing(shardID uint64, shardAddress string) {
 		if err := c.Reshard(); err != nil {
 			log.Printf("Reshard error: %v", err)
 		}
-	}
-}
-
-func (c *Controller) processConflict(shardID uint64) {
-
-	if atomic.CompareAndSwapInt32(&c.clusterHealthy, 1, 0) {
-		log.Printf("Conflict for shard %d; cluster is unhealthy", shardID)
-	}
-
-}
-
-const (
-	bufferSize       = 8192
-	socketBufferSize = 1024 * 1024
-)
-
-func (c *Controller) listenForPeers(ctx context.Context, address string) error {
-	defer close(c.broadcastQueue)
-	laddr, err := net.ResolveUDPAddr("udp4", address)
-	if err != nil {
-		return fmt.Errorf("resolve(%q): %v", address, err)
-	}
-
-	conn, err := net.ListenMulticastUDP("udp4", nil, laddr)
-	if err != nil {
-		return fmt.Errorf("listen(%q): %v", address, err)
-	}
-	defer conn.Close()
-
-	conn.SetReadBuffer(socketBufferSize)
-
-	log.Printf("Listening for peers on: %s", address)
-LOOP:
-	for {
-		select {
-		case <-ctx.Done():
-			break LOOP
-		default:
-			buffer := make([]byte, bufferSize)
-			bytesRead, from, err := conn.ReadFromUDP(buffer)
-			if err != nil {
-				log.Printf("Receive error: %v", err)
-				continue
-			}
-			var msg peerMessage
-			if err := json.Unmarshal(buffer[:bytesRead], &msg); err != nil {
-				log.Printf("Decode error from %s: %v", from.IP, err)
-			}
-			c.processPeerMessage(msg)
-		}
-	}
-	return nil
-}
-
-const (
-	pingInterval  = time.Second
-	conflictRetry = 5 * time.Second
-)
-
-func (c *Controller) manageCluster(ctx context.Context, peerAddress string) {
-	raddr, err := net.ResolveUDPAddr("udp4", peerAddress)
-	if err != nil {
-		log.Printf("Resolve(%q): %v", peerAddress, err)
-		return
-	}
-
-	conn, err := net.DialUDP("udp4", nil, raddr)
-	if err != nil {
-		log.Printf("Dial error: %v", err)
-		return
-	}
-
-	defer conn.Close()
-
-	pingMessage := peerMessage{Event: pingEvent, ShardID: c.currShardID, Address: c.shards[c.currShardID]}
-	pingTicks := time.NewTicker(pingInterval)
-	recoverConflictTicks := time.NewTicker(conflictRetry)
-
-	defer func() {
-		pingTicks.Stop()
-		recoverConflictTicks.Stop()
-	}()
-
-LOOP:
-	for {
-		select {
-		case <-recoverConflictTicks.C:
-			if atomic.CompareAndSwapInt32(&c.clusterHealthy, 0, 1) {
-				log.Printf("trying to recover cluster")
-			}
-		case <-pingTicks.C:
-			broadcast(conn, pingMessage)
-		case m := <-c.broadcastQueue:
-			broadcast(conn, m)
-		case <-ctx.Done():
-			break LOOP
-		}
-	}
-}
-
-func (c *Controller) lockCluster() {
-	atomic.StoreInt32(&c.clusterLocked, 1)
-	c.broadcastQueue <- peerMessage{Event: clusterLocked}
-	log.Printf("cluster locked")
-
-}
-
-func (c *Controller) unlockCluster() {
-	atomic.StoreInt32(&c.clusterLocked, 0)
-	c.broadcastQueue <- peerMessage{Event: clusterUnlocked}
-	log.Printf("cluster unlocked")
-}
-
-func (c *Controller) isClusterReady() bool {
-	return atomic.LoadInt32(&c.clusterHealthy) == 1 && atomic.LoadInt32(&c.clusterLocked) == 0
-}
-
-func broadcast(w io.Writer, pm peerMessage) {
-	body, _ := json.Marshal(pm)
-	if _, err := w.Write(body); err != nil {
-		log.Printf("Write(%+v): %v", pm, err)
 	}
 }
