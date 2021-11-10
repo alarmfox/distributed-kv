@@ -37,8 +37,10 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	controller := domain.NewController(db, *shardID, *listenAddress)
-	clusterClient := cluster.Client{}
+	shards := storage.NewShardMap(*shardID, *listenAddress)
+
+	clusterClient := cluster.NewClient(shards, *shardID)
+	controller := domain.NewController(db, shards, clusterClient)
 	go clusterClient.JoinCluster(ctx, *shardID, *peerAddress, *listenAddress)
 
 	sig := make(chan os.Signal, 1)

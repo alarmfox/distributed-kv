@@ -9,6 +9,8 @@ import (
 	"net"
 	"sync/atomic"
 	"time"
+
+	"github.com/alarmfox/distributed-kv/storage"
 )
 
 const (
@@ -17,6 +19,10 @@ const (
 	clusterLocked
 	clusterUnlocked
 )
+
+type Resharder interface {
+	Reshard() error
+}
 
 type PeerEvent struct {
 	Event   uint8
@@ -28,12 +34,24 @@ type Client struct {
 	clusterLocked  int32
 	clusterHealthy int32
 	broadcastQueue chan PeerEvent
+	shards         *storage.ShardMap
+	selfID         uint64
+}
+
+func NewClient(shards *storage.ShardMap, selfID uint64) *Client {
+	return &Client{
+		clusterLocked:  0,
+		clusterHealthy: 1,
+		broadcastQueue: make(chan PeerEvent),
+		shards:         shards,
+		selfID:         selfID,
+	}
 }
 
 func (c *Client) processPeerMessage(pm PeerEvent) {
 	switch pm.Event {
 	case pingEvent:
-		log.Printf("Ping from %s", pm.Address)
+		c.processPing(pm)
 	case ConflictEvent:
 		if atomic.CompareAndSwapInt32(&c.clusterHealthy, 1, 0) {
 			log.Printf("Conflict for shard %d; cluster is unhealthy", pm.ShardID)
@@ -159,12 +177,31 @@ func (c *Client) IsClusterReady() bool {
 	return atomic.LoadInt32(&c.clusterHealthy) == 1 && atomic.LoadInt32(&c.clusterLocked) == 0
 }
 
-func (c *Client) Broadcast(message PeerEvent) {
-	c.broadcastQueue <- message
-}
-
 func broadcast(w io.Writer, body []byte) {
 	if _, err := w.Write(body); err != nil {
 		log.Printf("Write: %v", err)
+	}
+}
+
+func (c *Client) processPing(event PeerEvent) {
+
+	if !c.IsClusterReady() {
+		return
+	}
+
+	address := c.shards.Get(event.ShardID)
+
+	if c.selfID == event.ShardID && event.Address != c.shards.Get(c.selfID) {
+		c.broadcastQueue <- PeerEvent{Event: ConflictEvent, ShardID: event.ShardID, Address: address}
+		return
+	}
+
+	if address != event.Address {
+		c.shards.Set(event.ShardID, event.Address)
+		log.Printf("Got new peer: id: %d; address %s", event.ShardID, event.Address)
+		// if err := c.resharder.Reshard(); err != nil {
+		// 	log.Printf("Reshard error: %v", err)
+		// }
+		log.Printf("should reshard")
 	}
 }
