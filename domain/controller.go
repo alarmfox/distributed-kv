@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -20,21 +19,22 @@ import (
 )
 
 type Controller struct {
-	shards         map[uint64]string
-	currShardID    uint64
-	currStorage    *storage.Storage
+	shards         *ShardMap
+	selfID         uint64
+	selfAddress    string
+	storage        *storage.Storage
 	client         *http.Client
 	broadcastQueue chan peerMessage
 	clusterHealthy int32
 	clusterLocked  int32
-	sync.Mutex
 }
 
-func NewController(currStorage *storage.Storage, currShardID uint64, shardAddress string) *Controller {
+func NewController(currStorage *storage.Storage, shards *ShardMap, selfID uint64, selfAddress string) *Controller {
 	return &Controller{
-		shards:      map[uint64]string{currShardID: shardAddress},
-		currStorage: currStorage,
-		currShardID: currShardID,
+		shards:      shards,
+		storage:     currStorage,
+		selfID:      selfID,
+		selfAddress: selfAddress,
 		client: &http.Client{
 			Timeout: time.Second,
 		},
@@ -45,7 +45,7 @@ func NewController(currStorage *storage.Storage, currShardID uint64, shardAddres
 }
 
 func (c *Controller) getShardID(key string) uint64 {
-	return (binary.BigEndian.Uint64(fnv.New128().Sum([]byte(key))) % uint64(len(c.shards)))
+	return (binary.BigEndian.Uint64(fnv.New128().Sum([]byte(key))) % c.shards.Count())
 }
 
 var (
@@ -57,12 +57,12 @@ func (c *Controller) Get(key string) ([]byte, error) {
 		return []byte{}, ErrClusterUnhealthy
 	}
 	shardID := c.getShardID(key)
-	if shardID != c.currShardID {
+	if shardID != c.selfID {
 		log.Printf("Key: %s; redirecting to Shard-%d", key, shardID)
-		return c.getRemoteKey(c.shards[shardID], key)
+		return c.getRemoteKey(c.shards.Get(shardID), key)
 	}
 
-	return c.currStorage.Get(key), nil
+	return c.storage.Get(key), nil
 }
 
 func (c *Controller) Set(key string, value []byte) error {
@@ -70,27 +70,27 @@ func (c *Controller) Set(key string, value []byte) error {
 		return ErrClusterUnhealthy
 	}
 	shardID := c.getShardID(key)
-	if shardID != c.currShardID {
+	if shardID != c.selfID {
 		log.Printf("Key: %s; redirecting to Shard-%d", key, shardID)
-		return c.setRemoteKey(c.shards[shardID], key, value)
+		return c.setRemoteKey(c.shards.Get(shardID), key, value)
 	}
 
-	return c.currStorage.Set(key, value)
+	return c.storage.Set(key, value)
 }
 
 func (c *Controller) Reshard() error {
 	c.lockCluster()
 	defer c.unlockCluster()
 
-	itemsToReshard := c.currStorage.GetExtraKeys(func(key string) bool { return c.currShardID != c.getShardID(key) })
+	itemsToReshard := c.storage.GetExtraKeys(func(key string) bool { return c.selfID != c.getShardID(key) })
 
 	for _, item := range itemsToReshard {
 		shardID := c.getShardID(item.Key)
-		if err := c.setRemoteKey(c.shards[shardID], item.Key, item.Value); err != nil {
+		if err := c.setRemoteKey(c.shards.Get(shardID), item.Key, item.Value); err != nil {
 			return fmt.Errorf("cannot set key %s: %v", item.Key, err)
 		}
 	}
-	return c.currStorage.DeleteKeys(itemsToReshard)
+	return c.storage.DeleteKeys(itemsToReshard)
 
 }
 
@@ -165,22 +165,18 @@ func (c *Controller) JoinCluster(ctx context.Context, peerAddress string) error 
 }
 
 func (c *Controller) processPing(shardID uint64, shardAddress string) {
-	c.Mutex.Lock()
-	defer c.Mutex.Unlock()
-
 	if !c.isClusterReady() {
 		return
 	}
 
-	address := c.shards[shardID]
-
-	if c.currShardID == shardID && shardAddress != c.shards[c.currShardID] {
+	address := c.shards.Get(shardID)
+	if c.selfID == shardID && shardAddress != c.shards.Get(c.selfID) {
 		c.broadcastQueue <- peerMessage{Event: conflictEvent, ShardID: shardID, Address: address}
 		return
 	}
 
 	if address != shardAddress {
-		c.shards[shardID] = shardAddress
+		c.shards.Set(shardID, shardAddress)
 		log.Printf("Got new peer: id: %d; address %s", shardID, shardAddress)
 		if err := c.Reshard(); err != nil {
 			log.Printf("Reshard error: %v", err)
@@ -259,7 +255,7 @@ func (c *Controller) manageCluster(ctx context.Context, peerAddress string) {
 
 	defer conn.Close()
 
-	pingMessage := peerMessage{Event: pingEvent, ShardID: c.currShardID, Address: c.shards[c.currShardID]}
+	pingMessage := peerMessage{Event: pingEvent, ShardID: c.selfID, Address: c.shards.Get(c.selfID)}
 	pingTicks := time.NewTicker(pingInterval)
 	recoverConflictTicks := time.NewTicker(conflictRetry)
 

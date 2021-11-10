@@ -36,7 +36,10 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	controller := domain.NewController(db, *shardID, *listenAddress)
+	shards := domain.NewShardMap()
+	shards.Set(*shardID, *listenAddress)
+
+	controller := domain.NewController(db, shards, *shardID, *listenAddress)
 	go controller.JoinCluster(ctx, *peerAddress)
 
 	sig := make(chan os.Signal, 1)
