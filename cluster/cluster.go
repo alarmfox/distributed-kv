@@ -20,10 +20,6 @@ const (
 	clusterUnlocked
 )
 
-type Resharder interface {
-	Reshard() error
-}
-
 type PeerEvent struct {
 	Event   uint8
 	ShardID uint64
@@ -36,6 +32,7 @@ type Client struct {
 	broadcastQueue chan PeerEvent
 	shards         *storage.ShardMap
 	selfID         uint64
+	onNewNode      func() error
 }
 
 func NewClient(shards *storage.ShardMap, selfID uint64) *Client {
@@ -65,7 +62,8 @@ func (c *Client) processPeerMessage(pm PeerEvent) {
 	}
 }
 
-func (c *Client) JoinCluster(ctx context.Context, selfID uint64, peerAddress, selfAddress string) error {
+func (c *Client) JoinCluster(ctx context.Context, selfID uint64, peerAddress, selfAddress string, onNewNode func() error) error {
+	c.onNewNode = onNewNode
 	go c.manageCluster(ctx, selfID, peerAddress, selfAddress)
 	return c.listenForPeers(ctx, peerAddress)
 
@@ -199,9 +197,8 @@ func (c *Client) processPing(event PeerEvent) {
 	if address != event.Address {
 		c.shards.Set(event.ShardID, event.Address)
 		log.Printf("Got new peer: id: %d; address %s", event.ShardID, event.Address)
-		// if err := c.resharder.Reshard(); err != nil {
-		// 	log.Printf("Reshard error: %v", err)
-		// }
-		log.Printf("should reshard")
+		if err := c.onNewNode(); err != nil {
+			log.Printf("Reshard error: %v", err)
+		}
 	}
 }

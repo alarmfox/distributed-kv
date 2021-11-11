@@ -41,7 +41,7 @@ func main() {
 
 	clusterClient := cluster.NewClient(shards, *shardID)
 	controller := domain.NewController(db, shards, clusterClient)
-	go clusterClient.JoinCluster(ctx, *shardID, *peerAddress, *listenAddress)
+	go clusterClient.JoinCluster(ctx, *shardID, *peerAddress, *listenAddress, controller.Reshard)
 
 	sig := make(chan os.Signal, 1)
 	defer close(sig)
